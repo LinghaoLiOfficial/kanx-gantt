@@ -28,6 +28,11 @@ jobs:
           cache: pnpm
           registry-url: https://registry.npmjs.org
 
+      - name: Setup npm for Trusted Publishing
+        run: |
+          npm install --global npm@11.9.0
+          npm --version
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
