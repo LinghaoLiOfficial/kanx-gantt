@@ -1,6 +1,6 @@
 {
   "name": "kanx-gantt",
-  "version": "0.1.1-rc.1",
+  "version": "0.1.1",
   "private": false,
   "description": "A React Gantt chart component with business-friendly task and dependency data.",
   "main": "./dist/index.cjs",
