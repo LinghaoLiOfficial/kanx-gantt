@@ -46,6 +46,11 @@ export type GanttNativeProps = {
   cellBorders?: "column" | "full";
   cellWidth?: number;
   gridWidth?: number;
+  start?: Date;
+  end?: Date;
+  autoScale?: boolean;
+  projectStart?: Date;
+  projectEnd?: Date;
   [key: string]: unknown;
 };
 

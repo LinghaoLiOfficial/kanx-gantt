@@ -1,3 +1,6 @@
+"use client";
+
+import { useEffect, useState } from "react";
 import { SvarGantt } from "@/components/gantt/svar-gantt";
 import {
   frontendStackEdgeData,
@@ -8,8 +11,28 @@ import {
 } from "@/data/frontend-stack-plan";
 
 const showDependencyArrows = false;
+const STORAGE_KEY = "kanx-gantt:frontend-stack-snapshot:v2";
 
 export default function Home() {
+  const [snapshot, setSnapshot] = useState({ taskData: frontendStackTaskData, edgeData: frontendStackEdgeData });
+  const [hydrated, setHydrated] = useState(false);
+  useEffect(() => {
+    let active = true;
+    try {
+      const parsed = JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? "null");
+      if (Array.isArray(parsed?.taskData) && Array.isArray(parsed?.edgeData)) {
+        queueMicrotask(() => { if (active) setSnapshot(parsed); });
+      }
+    } catch {
+      window.localStorage.removeItem(STORAGE_KEY);
+    } finally {
+      queueMicrotask(() => { if (active) setHydrated(true); });
+    }
+    return () => { active = false; };
+  }, []);
+  useEffect(() => {
+    if (hydrated) window.localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot));
+  }, [hydrated, snapshot]);
   return (
     <main className="min-h-svh bg-muted/40 px-4 py-6 sm:px-6 lg:px-8">
       <div className="mx-auto flex w-full max-w-[1600px] flex-col gap-6">
@@ -25,10 +48,6 @@ export default function Home() {
               从技术选型到正式上线的示例计划。业务数据由通用组件适配为甘特图，支持拖动任务条、调整进度或展开层级。
             </p>
           </div>
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <span className="size-2 rounded-full bg-emerald-500" />
-            示例数据仅保存在当前页面
-          </div>
         </header>
 
         <section
@@ -38,8 +57,9 @@ export default function Home() {
           <div className="overflow-x-auto">
             <SvarGantt
               className="h-[560px] min-w-[960px]"
-              taskData={frontendStackTaskData}
-              edgeData={frontendStackEdgeData}
+              taskData={snapshot.taskData}
+              edgeData={snapshot.edgeData}
+              onChange={setSnapshot}
               taskRenderers={frontendStackTaskRenderers}
               edgeRenderers={frontendStackEdgeRenderers}
               nativeProps={frontendStackNativeProps}

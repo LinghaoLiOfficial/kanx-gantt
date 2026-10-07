@@ -1,11 +1,11 @@
 {
-  "name": "kanx-gantt",
+  "name": "@linghaoliofficial/kanx-gantt",
   "version": "0.1.4",
   "private": false,
   "description": "A React Gantt chart component with business-friendly task and dependency data.",
   "repository": {
     "type": "git",
-    "url": "https://github.com/LinghaoLiOfficial/kanx-gantt"
+    "url": "git+https://github.com/LinghaoLiOfficial/kanx-gantt.git"
   },
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
@@ -15,13 +15,15 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "require": "./dist/index.cjs"
-    }
+    },
+    "./style.css": "./dist/index.css"
   },
   "files": [
     "dist"
   ],
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "registry": "https://npm.pkg.github.com"
   },
   "packageManager": "pnpm@10.15.0",
   "engines": {
