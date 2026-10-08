@@ -22,7 +22,7 @@ export function toSvarTasks(taskData: GanttTaskData[], options: SvarTaskProjecti
     ...(task.progress === undefined ? {} : { progress: task.progress }),
     ...(task.parent_id === undefined ? {} : { parent: task.parent_id }),
     ...(task.open === undefined ? {} : { open: task.open }),
-    ...(task.fields === undefined ? {} : { $businessFields: { ...task.fields } }),
+    ...(task.fields === undefined ? {} : { $businessFields: normalizeFields(task.fields) }),
   }));
 }
 
@@ -46,7 +46,7 @@ export function toSvarLinks(edgeData: GanttEdgeData[]): ILink[] {
     target: edge.target_id,
     ...(edge.lag === undefined ? {} : { lag: edge.lag }),
     ...(edge.name === undefined ? {} : { $businessName: edge.name }),
-    ...(edge.fields === undefined ? {} : { $businessFields: { ...edge.fields } }),
+    ...(edge.fields === undefined ? {} : { $businessFields: normalizeFields(edge.fields) }),
   }));
 }
 
@@ -78,7 +78,7 @@ export function fromSvarTasks(
       ...(task.open === undefined ? {} : { open: task.open }),
       ...(internal.$businessFields === undefined && previous?.fields === undefined
         ? {}
-        : { fields: { ...(internal.$businessFields ?? previous?.fields ?? {}) } }),
+        : { fields: normalizeFields(internal.$businessFields ?? previous?.fields) }),
     };
   });
 }
@@ -108,7 +108,7 @@ export function fromSvarLinks(
       ...(link.lag === undefined ? {} : { lag: link.lag }),
       ...(internal.$businessFields === undefined && previous?.fields === undefined
         ? {}
-        : { fields: { ...(internal.$businessFields ?? previous?.fields ?? {}) } }),
+        : { fields: normalizeFields(internal.$businessFields ?? previous?.fields) }),
     };
   });
 }
@@ -123,4 +123,14 @@ function toDate(value: string | Date): Date {
 
 function key(value: GanttId | undefined): string {
   return `${typeof value}:${String(value)}`;
+}
+
+function normalizeFields(fields: unknown): Record<string, string> {
+  if (fields === null || typeof fields !== "object" || Array.isArray(fields)) return {};
+  const normalized: Record<string, string> = {};
+  for (const name of Reflect.ownKeys(fields)) {
+    if (typeof name !== "string") continue;
+    normalized[name] = String((fields as Record<string, unknown>)[name]);
+  }
+  return normalized;
 }

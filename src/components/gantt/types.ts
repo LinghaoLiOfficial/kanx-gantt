@@ -1,6 +1,6 @@
 import type { IColumnConfig, IScaleConfig } from "@svar-ui/react-gantt";
 
-export type GanttFieldValue = string | number | boolean | null;
+export type GanttFieldValue = string;
 export type GanttFields = Record<string, GanttFieldValue>;
 export type GanttId = string | number;
 

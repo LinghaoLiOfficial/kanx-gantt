@@ -2,14 +2,16 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentProps } from "react";
 import { Gantt, Willow, type IApi, type ILink, type ITask } from "@svar-ui/react-gantt";
-import { CircleHelp, Plus, X } from "lucide-react";
+import { CircleHelp, GripVertical, Plus, X } from "lucide-react";
 import "@svar-ui/react-gantt/all.css";
 import "./gantt.css";
 import { cn } from "../../lib/utils";
 import { fromSvarLinks, toSvarLinks, toSvarTasks } from "./adapter";
 import { FieldsEditor } from "./fields-editor";
-import { toDraft, type FieldDraft } from "./fields-state";
-import { applyChartUpdates, canCreateChild, DEFAULT_GRID_WIDTH, descendants, DETAIL_PREFIX, dragTask, firstTaskDate, idKey, removeSubtree, visibleTasks, yearOptions, type TaskDragMode } from "./task-state";
+import { normalizeFields, normalizeTaskFields, toTaskDraft, type FieldDraft } from "./fields-state";
+import { Tooltip, TooltipContent, type TooltipAnchorRect } from "../ui/tooltip";
+import { applyChartUpdates, canCreateChild, DEFAULT_GRID_WIDTH, descendants, DETAIL_PREFIX, dragTask, idKey, insertTask, openingDate, removeSubtree, reorderTasks, visibleTasks, yearOptions, type TaskDragMode, type TaskDropPosition } from "./task-state";
+import { TaskCreateDialog, type TaskCreateValues } from "./task-create-dialog";
 import type { GanttEdgeData, GanttEdgeRenderStyle, GanttId, GanttNativeProps, GanttSnapshot, GanttTaskData, GanttTaskRenderStyle } from "./types";
 
 const subscribe = () => () => undefined;
@@ -17,11 +19,6 @@ const emptyEdges: GanttEdgeData[] = [];
 const emptyTaskRenderers: Record<string, GanttTaskRenderStyle> = {};
 const emptyEdgeRenderers: Record<string, GanttEdgeRenderStyle> = {};
 const matchesChartId = (id: GanttId, chartId: string | undefined) => chartId === (typeof id === "string" ? `:${id}` : String(id));
-const openingDate = (tasks: GanttTaskData[], year: number) => {
-  const date = firstTaskDate(tasks, year);
-  date.setDate(date.getDate() - 1);
-  return date < new Date(year, 0, 1) ? new Date(year, 0, 1) : date;
-};
 export type SvarGanttProps = {
   taskData: GanttTaskData[]; edgeData?: GanttEdgeData[];
   taskRenderers?: Record<string, GanttTaskRenderStyle>; edgeRenderers?: Record<string, GanttEdgeRenderStyle>;
@@ -33,6 +30,10 @@ type NativeGanttProps = Omit<ComponentProps<typeof Gantt>, "tasks" | "links" | "
 const chartScales: NonNullable<NativeGanttProps["scales"]> = [{ unit: "month", step: 1, format: "%Y 年 %m 月" }, { unit: "day", step: 1, format: "%d 日" }];
 const emptyColumns: NonNullable<NativeGanttProps["columns"]> = [];
 const emptyLinks: ILink[] = [];
+const normalizeSnapshot = (taskData: GanttTaskData[], edgeData: GanttEdgeData[]): GanttSnapshot => ({
+  taskData: taskData.map((task) => ({ ...task, fields: normalizeTaskFields(task.fields) })),
+  edgeData: edgeData.map((edge) => edge.fields === undefined ? edge : { ...edge, fields: normalizeFields(edge.fields) }),
+});
 
 function TreeMarker({ depth, hasChildren, open, name, onToggle }: { depth: number; hasChildren: boolean; open?: boolean; name: string; onToggle: () => void }) {
   if (!hasChildren) return <span className={`kanx-tree ${depth > 0 ? "kanx-child-bullet" : ""}`} aria-hidden="true">{depth > 0 ? "•" : ""}</span>;
@@ -43,14 +44,36 @@ function taskTypeLabel(type: string) {
   return type === "milestone" ? "节点" : "时段";
 }
 
+function taskDateLabel(value: string | Date) {
+  if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)) return value.replaceAll("-", "/");
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return `${date.getFullYear()}/${String(date.getMonth() + 1).padStart(2, "0")}/${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function taskDurationDays(start: string | Date, end: string | Date) {
+  const toDay = (value: string | Date) => {
+    if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
+      const [year, month, day] = value.split("-").map(Number);
+      return Date.UTC(year, month - 1, day);
+    }
+    const date = new Date(value);
+    return Date.UTC(date.getFullYear(), date.getMonth(), date.getDate());
+  };
+  const duration = Math.floor((toDay(end) - toDay(start)) / 86400000) + 1;
+  return Number.isFinite(duration) && duration > 0 ? duration : 0;
+}
+
 export function SvarGantt({ className, taskData, edgeData = emptyEdges, taskRenderers = emptyTaskRenderers, edgeRenderers = emptyEdgeRenderers, showDependencyArrows = false, onChange, selectedYear: controlledYear, onYearChange, nativeProps = {} }: SvarGanttProps) {
   const mounted = useSyncExternalStore(subscribe, () => true, () => false);
   const hostRef = useRef<HTMLDivElement>(null);
   const leftRef = useRef<HTMLDivElement>(null);
   const apiRef = useRef<IApi | null>(null);
+  const positionFrames = useRef<number[]>([]);
+  const positionGeneration = useRef(0);
   const [renderApi, setRenderApi] = useState<IApi | null>(null);
   const clickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [snapshot, setSnapshot] = useState<GanttSnapshot>({ taskData, edgeData });
+  const [snapshot, setSnapshot] = useState<GanttSnapshot>(() => normalizeSnapshot(taskData, edgeData));
   const chartUpdating = useRef(false);
   const gesture = useRef<{ id: GanttId; mode: TaskDragMode; x: number; days: number; width: number; base: GanttSnapshot; previewTasks: GanttTaskData[]; pointerId: number } | null>(null);
   const [rulesOpen, setRulesOpen] = useState(false);
@@ -61,6 +84,11 @@ export function SvarGantt({ className, taskData, edgeData = emptyEdges, taskRend
   const [editing, setEditing] = useState<{ id: GanttId; value: string } | null>(null);
   const [nameError, setNameError] = useState("");
   const [deleting, setDeleting] = useState<GanttId | null>(null);
+  const [creating, setCreating] = useState<GanttTaskData | null | undefined>(undefined);
+  const dragSession = useRef<{ id: GanttId } | null>(null);
+  const [dragTaskId, setDragTaskId] = useState<GanttId | null>(null);
+  const [dropTarget, setDropTarget] = useState<{ id: GanttId; position: TaskDropPosition } | null>(null);
+  const [chartTooltip, setChartTooltip] = useState<{ content: string; anchorRect: TooltipAnchorRect } | null>(null);
   const [headerHeight, setHeaderHeight] = useState(60);
   const [viewportHeight, setViewportHeight] = useState(0);
   const thisYear = new Date().getFullYear();
@@ -69,18 +97,25 @@ export function SvarGantt({ className, taskData, edgeData = emptyEdges, taskRend
   const readonly = Boolean(nativeProps.readonly);
   const rowHeight = Number(nativeProps.cellHeight ?? 44);
   const gridWidth = Number(nativeProps.gridWidth ?? DEFAULT_GRID_WIDTH);
-  const draftFor = (task: GanttTaskData) => drafts[idKey(task.id)] ?? toDraft(task.fields);
+  const draftFor = (task: GanttTaskData) => drafts[idKey(task.id)] ?? toTaskDraft(task.fields);
   const [inputs, setInputs] = useState({ taskData, edgeData });
   if (inputs.taskData !== taskData || inputs.edgeData !== edgeData) {
     setInputs({ taskData, edgeData });
-    setSnapshot({ taskData, edgeData });
+    setSnapshot(normalizeSnapshot(taskData, edgeData));
   }
+  const positionDataKey = useMemo(() => taskData.map((task) => [idKey(task.id), task.type, String(task.start), String(task.end), task.parent_id === undefined ? "" : idKey(task.parent_id)].join("|")).join(";"), [taskData]);
   const commit = (next: GanttSnapshot) => { current.current.snapshot = next; setSnapshot(next); onChange?.(next); };
   const update = (id: GanttId, patch: Partial<GanttTaskData>) => commit({ ...snapshot, taskData: snapshot.taskData.map((task) => task.id === id ? { ...task, ...patch } : task) });
   const current = useRef({ snapshot, commit, readonly, nativeProps, showDependencyArrows, selectedYear });
   useEffect(() => { current.current = { snapshot, commit, readonly, nativeProps, showDependencyArrows, selectedYear }; });
   const shownTasks = snapshot.taskData;
-  const rows = useMemo(() => visibleTasks(shownTasks, expanded, (task) => Math.ceil((132 + (drafts[idKey(task.id)] ?? toDraft(task.fields)).length * 38) / rowHeight)), [shownTasks, expanded, drafts, rowHeight]);
+  const rows = useMemo(() => visibleTasks(shownTasks, expanded, (task) => {
+    const fieldCount = (drafts[idKey(task.id)] ?? toTaskDraft(task.fields)).length;
+    // Reserve one row for dates and one row for the empty editor's add control;
+    // each existing feature uses one additional row.
+    const detailContentHeight = 30 + 8 + (readonly ? 12 : 40) + fieldCount * 30;
+    return Math.max(1, Math.ceil(detailContentHeight / rowHeight));
+  }), [shownTasks, expanded, drafts, readonly, rowHeight]);
   const tasks = useMemo(() => toSvarTasks(rows.flatMap(({ task, detailRows }) => [
     // Business hierarchy is maintained here, not by SVAR's automatic rollups.
     { ...task, type: task.type === "summary" ? "task" : task.type, parent_id: undefined, open: undefined },
@@ -91,12 +126,23 @@ export function SvarGantt({ className, taskData, edgeData = emptyEdges, taskRend
     return toSvarLinks(snapshot.edgeData.filter((edge) => ids.has(edge.source_id) && ids.has(edge.target_id)));
   }, [rows, snapshot.edgeData]);
   const cleanupRef = useRef<(() => void) | null>(null);
+  const schedulePosition = useCallback((api: IApi) => {
+    const generation = ++positionGeneration.current;
+    positionFrames.current.forEach((frame) => cancelAnimationFrame(frame));
+    positionFrames.current = [];
+    const run = () => {
+      if (generation !== positionGeneration.current || apiRef.current !== api) return;
+      api.exec("scroll-chart", { date: openingDate(current.current.snapshot.taskData, current.current.selectedYear) });
+      positionFrames.current = [];
+    };
+    positionFrames.current.push(requestAnimationFrame(() => {
+      positionFrames.current.push(requestAnimationFrame(run));
+    }));
+  }, []);
   const init = useCallback((api: IApi) => {
     cleanupRef.current?.(); apiRef.current = api; setRenderApi(api);
-    // Position once when the chart first mounts; date gestures retain it.
-    const positionTimer = setTimeout(() => {
-      api.exec("scroll-chart", { date: openingDate(current.current.snapshot.taskData, current.current.selectedYear) });
-    }, 0);
+    // Wait for SVAR's scale and chart dimensions before positioning.
+    schedulePosition(api);
     const tag = "kanx-business";
     const reactive = api.getReactiveState();
     // SVAR's public writable type declares void, but subscribe returns an unsubscribe function at runtime.
@@ -140,9 +186,22 @@ export function SvarGantt({ className, taskData, edgeData = emptyEdges, taskRend
     }, { tag });
     const nativeInit = current.current.nativeProps.init;
     if (typeof nativeInit === "function") nativeInit(api);
-    cleanupRef.current = () => { unscroll?.(); unscale?.(); unheight?.(); clearTimeout(timer); clearTimeout(linkTimer); clearTimeout(positionTimer); pendingUpdates.clear(); api.detach(tag); };
+    cleanupRef.current = () => { unscroll?.(); unscale?.(); unheight?.(); clearTimeout(timer); clearTimeout(linkTimer); pendingUpdates.clear(); api.detach(tag); };
+  }, [schedulePosition]);
+  useEffect(() => () => {
+    cleanupRef.current?.();
+    positionFrames.current.forEach((frame) => cancelAnimationFrame(frame));
+    if (clickTimer.current) clearTimeout(clickTimer.current);
   }, []);
-  useEffect(() => () => { cleanupRef.current?.(); if (clickTimer.current) clearTimeout(clickTimer.current); }, []);
+  useEffect(() => {
+    const closeDetailsOutside = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Element) || target.closest(".kanx-detail") || target.closest(".kanx-task-row")) return;
+      setExpanded((previous) => previous.size ? new Set() : previous);
+    };
+    document.addEventListener("pointerdown", closeDetailsOutside);
+    return () => document.removeEventListener("pointerdown", closeDetailsOutside);
+  }, []);
   useEffect(() => {
     let frame = 0;
     const preview = () => {
@@ -197,17 +256,34 @@ export function SvarGantt({ className, taskData, edgeData = emptyEdges, taskRend
   useEffect(() => {
     const api = apiRef.current;
     if (!api) return;
-    const timer = setTimeout(() => api.exec("scroll-chart", { date: openingDate(current.current.snapshot.taskData, selectedYear) }), 0);
-    return () => clearTimeout(timer);
-  }, [selectedYear]);
+    schedulePosition(api);
+  }, [schedulePosition, selectedYear]);
+  const previousPositionDataKey = useRef(positionDataKey);
+  useEffect(() => {
+    if (previousPositionDataKey.current === positionDataKey) return;
+    previousPositionDataKey.current = positionDataKey;
+    if (apiRef.current) schedulePosition(apiRef.current);
+  }, [positionDataKey, schedulePosition]);
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
     const tasksByChartId = new Map(snapshot.taskData.map((task) => [typeof task.id === "string" ? `:${task.id}` : String(task.id), task]));
+    // Root tasks are parent-capable even before their first child is added;
+    // summary tasks remain parents after children are removed.
+    const parentIds = new Set(snapshot.taskData.filter((task) => task.parent_id === undefined || task.type === "summary").map((task) => idKey(task.id)));
+    snapshot.taskData.forEach((task) => { if (task.parent_id !== undefined) parentIds.add(idKey(task.parent_id)); });
     const edgesByChartId = new Map(snapshot.edgeData.map((edge) => [String(edge.id), edge]));
     const applyStyles = () => {
       host.querySelectorAll<HTMLElement>(".wx-bar[data-id]").forEach((bar) => {
         const task = tasksByChartId.get(bar.dataset.id ?? "");
+        const isParent = task ? parentIds.has(idKey(task.id)) : false;
+        if (isParent) bar.dataset.kanxHierarchy = "parent";
+        else delete bar.dataset.kanxHierarchy;
+        // Apply this directly because the chart library may overwrite the
+        // text styles after the bar is mounted. Summary tasks remain parents
+        // even when they currently have no children.
+        const taskText = bar.querySelector<HTMLElement>(".wx-text-out");
+        if (taskText) taskText.style.fontWeight = isParent ? "700" : "";
         // Reuse SVAR's two circular endpoints. Do not add another handle or
         // interpret the task body's edges as a separate resize gesture.
         if (task) bar.querySelectorAll<HTMLElement>(".wx-link").forEach((handle) => {
@@ -216,6 +292,10 @@ export function SvarGantt({ className, taskData, edgeData = emptyEdges, taskRend
         const progress = bar.querySelector<HTMLElement>(".wx-progress-marker");
         if (task && progress) progress.title = `调整进度：${task.name}`;
         const style = task && taskRenderers[task.type];
+        if (isParent) {
+          const outline = style?.borderColor ?? style?.barColor ?? getComputedStyle(bar).backgroundColor;
+          if (outline) bar.style.setProperty("--kanx-parent-outline", outline);
+        } else bar.style.removeProperty("--kanx-parent-outline");
         if (!style) return;
         const prefix = bar.classList.contains("wx-summary") ? "summary" : "task";
         for (const [key, value] of Object.entries({ color: style.barColor, "fill-color": style.progressColor, "font-color": style.fontColor, "border-color": style.borderColor })) if (value) bar.style.setProperty(`--wx-gantt-${prefix}-${key}`, value);
@@ -235,6 +315,35 @@ export function SvarGantt({ className, taskData, edgeData = emptyEdges, taskRend
     observer.observe(host.querySelector(".kanx-chart") ?? host, { childList: true, subtree: true });
     return () => observer.disconnect();
   }, [snapshot, taskRenderers, edgeRenderers, mounted, readonly]);
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) return;
+    const findAnchor = (target: EventTarget | null) => {
+      const element = target instanceof Element ? target : null;
+      const bar = element?.closest<HTMLElement>(".wx-bar[data-id]");
+      if (!element || !bar) return null;
+      const text = element.closest<HTMLElement>(".wx-text-out") ?? bar.querySelector<HTMLElement>(".wx-content");
+      if (!text || text.scrollWidth <= text.clientWidth + 1) return null;
+      const task = snapshot.taskData.find((item) => matchesChartId(item.id, bar.dataset.id));
+      if (!task) return null;
+      const rect = text.getBoundingClientRect();
+      return { content: task.name, anchorRect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height } };
+    };
+    const over = (event: MouseEvent) => {
+      const anchor = findAnchor(event.target);
+      setChartTooltip(anchor);
+    };
+    const out = (event: MouseEvent) => {
+      if (!(event.relatedTarget instanceof Node) || !host.contains(event.relatedTarget)) setChartTooltip(null);
+    };
+    const focus = (event: FocusEvent) => { const anchor = findAnchor(event.target); if (anchor) setChartTooltip(anchor); };
+    const blur = () => setChartTooltip(null);
+    host.addEventListener("mouseover", over);
+    host.addEventListener("mouseout", out);
+    host.addEventListener("focusin", focus);
+    host.addEventListener("focusout", blur);
+    return () => { host.removeEventListener("mouseover", over); host.removeEventListener("mouseout", out); host.removeEventListener("focusin", focus); host.removeEventListener("focusout", blur); };
+  }, [snapshot.taskData]);
   const toggleDetails = (task: GanttTaskData) => {
     const key = idKey(task.id);
     setExpanded((previous) => { const next = new Set(previous); if (next.has(key)) next.delete(key); else next.add(key); return next; });
@@ -252,14 +361,27 @@ export function SvarGantt({ className, taskData, edgeData = emptyEdges, taskRend
   };
   const add = (parent?: GanttTaskData) => {
     if (parent && !canCreateChild(parent)) return;
-    const id = `task:${crypto.randomUUID()}`;
-    const start = parent ? new Date(parent.start) : new Date(); start.setHours(0, 0, 0, 0);
-    const end = new Date(start); end.setDate(end.getDate() + 1);
-    const task: GanttTaskData = { id, name: "新任务", type: "task", start, end, progress: 0, fields: {}, ...(parent ? { parent_id: parent.id } : {}) };
-    commit({ ...snapshot, taskData: [...snapshot.taskData.map((item) => item.id === parent?.id ? { ...item, open: true } : item), task] });
-    setEditing({ id, value: task.name }); setNameError("");
-    setTimeout(() => apiRef.current?.exec("select-task", { id, show: "y" }), 0);
+    setCreating(parent ?? null);
   };
+  const createTask = (values: TaskCreateValues) => {
+    const id = `task:${crypto.randomUUID()}`;
+    const task: GanttTaskData = { id, name: values.name, type: values.type, start: values.start, end: values.end, progress: 0, fields: values.fields, ...(creating ? { parent_id: creating.id } : {}) };
+    commit({ ...snapshot, taskData: insertTask(snapshot.taskData, task) });
+    setCreating(undefined);
+  };
+  const taskForRow = (id: GanttId) => snapshot.taskData.find((item) => item.id === id);
+  const canDropOn = (sourceId: GanttId, targetId: GanttId) => {
+    const source = taskForRow(sourceId);
+    const target = taskForRow(targetId);
+    return Boolean(source && target && source.id !== target.id && source.parent_id === target.parent_id && !descendants(snapshot.taskData, source.id).has(target.id));
+  };
+  const finishTaskDrop = (targetId: GanttId, position: TaskDropPosition) => {
+    const sourceId = dragSession.current?.id;
+    if (sourceId === undefined || !canDropOn(sourceId, targetId)) return;
+    const taskData = reorderTasks(snapshot.taskData, sourceId, targetId, position);
+    if (taskData !== snapshot.taskData) commit({ ...snapshot, taskData });
+  };
+  const clearTaskDrop = () => { dragSession.current = null; setDragTaskId(null); setDropTarget(null); };
   const native = Object.fromEntries(Object.entries(nativeProps).filter(([key]) => !["tasks", "links", "init", "columns", "gridWidth", "displayMode", "scales", "start", "end", "autoScale", "projectStart", "projectEnd"].includes(key))) as NativeGanttProps;
   const yearStart = useMemo(() => new Date(selectedYear, 0, 1), [selectedYear]);
   const yearEnd = useMemo(() => new Date(selectedYear + 1, 0, 1), [selectedYear]);
@@ -290,25 +412,66 @@ export function SvarGantt({ className, taskData, edgeData = emptyEdges, taskRend
         <div className="kanx-list" ref={leftRef} onScroll={(event) => apiRef.current?.exec("scroll-chart", { top: event.currentTarget.scrollTop })}>
           <div style={{ minHeight: viewportHeight }}>
           {rows.map(({ task, depth, detailRows }) => <div key={idKey(task.id)}>
-            <div className="kanx-task-row" style={{ height: rowHeight }} onClick={() => { if (clickTimer.current) clearTimeout(clickTimer.current); clickTimer.current = setTimeout(() => toggleDetails(task), 230); }}>
+            <div
+              className={`kanx-task-row${dragTaskId === task.id ? " kanx-dragging" : ""}${dropTarget?.id === task.id ? ` kanx-drop-${dropTarget.position}` : ""}`}
+              style={{ height: rowHeight }}
+              draggable={!readonly}
+              aria-grabbed={dragTaskId === task.id}
+              onDragStart={(event) => {
+                if (readonly) return;
+                dragSession.current = { id: task.id };
+                setDragTaskId(task.id);
+                event.dataTransfer.effectAllowed = "move";
+                event.dataTransfer.setData("text/plain", idKey(task.id));
+                setDropTarget(null);
+              }}
+              onDragOver={(event) => {
+                const sourceId = dragSession.current?.id;
+                if (sourceId === undefined || !canDropOn(sourceId, task.id)) { setDropTarget(null); return; }
+                event.preventDefault();
+                event.dataTransfer.dropEffect = "move";
+                const position: TaskDropPosition = event.clientY < event.currentTarget.getBoundingClientRect().top + event.currentTarget.getBoundingClientRect().height / 2 ? "before" : "after";
+                setDropTarget((previous) => previous?.id === task.id && previous.position === position ? previous : { id: task.id, position });
+              }}
+              onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropTarget(null); }}
+              onDrop={(event) => { event.preventDefault(); const bounds = event.currentTarget.getBoundingClientRect(); const position: TaskDropPosition = event.clientY < bounds.top + bounds.height / 2 ? "before" : "after"; finishTaskDrop(task.id, position); clearTaskDrop(); }}
+              onDragEnd={clearTaskDrop}
+              onClick={() => {
+                if (dragSession.current) return;
+                if (clickTimer.current) clearTimeout(clickTimer.current);
+                const key = idKey(task.id);
+                if (expanded.has(key)) {
+                  setExpanded((previous) => { const next = new Set(previous); next.delete(key); return next; });
+                  return;
+                }
+                setExpanded((previous) => previous.size ? new Set() : previous);
+                clickTimer.current = setTimeout(() => toggleDetails(task), 230);
+              }}
+            >
               {columns.map((column) => <div className={`${column.id === "text" ? "kanx-name" : "kanx-cell"} ${column.id === "progress" ? "kanx-progress" : ""}`} key={column.id} style={{ flex: column.id === "text" ? 1 : undefined, width: column.id === "text" ? undefined : column.width ?? 90, textAlign: column.id === "progress" ? "right" : column.align }}>
                 {column.id === "text" ? <>
+                  {!readonly && <span className="kanx-drag-handle" title="拖拽调整同级顺序" aria-label="拖拽调整同级顺序"><GripVertical aria-hidden="true" size={15} /></span>}
                   <span style={{ width: depth * 16, flexShrink: 0 }} />
                   <TreeMarker depth={depth} hasChildren={snapshot.taskData.some((child) => child.parent_id === task.id)} open={task.open} name={task.name} onToggle={() => update(task.id, { open: task.open === false })} />
                   <span className={`kanx-type-badge ${task.type === "milestone" ? "kanx-type-badge-node" : "kanx-type-badge-period"}`} aria-label={`类型：${taskTypeLabel(task.type)}`}>{taskTypeLabel(task.type)}</span>
-                  {editing?.id === task.id ? <input autoFocus aria-label="任务名称" className="kanx-name-input" value={editing.value} onClick={(event) => event.stopPropagation()} onChange={(event) => setEditing({ ...editing, value: event.target.value })} onBlur={saveName} onKeyDown={(event) => { if (event.key === "Enter") saveName(); if (event.key === "Escape") { setEditing(null); setNameError(""); } }} /> : <button type="button" className="kanx-name-button" aria-expanded={expanded.has(idKey(task.id))} title={task.name} onDoubleClick={(event) => { event.stopPropagation(); if (clickTimer.current) clearTimeout(clickTimer.current); if (!readonly) { setEditing({ id: task.id, value: task.name }); setNameError(""); } }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); toggleDetails(task); } }}>{task.name}</button>}
+                  {editing?.id === task.id ? <input autoFocus aria-label="任务名称" className="kanx-name-input" value={editing.value} onClick={(event) => event.stopPropagation()} onChange={(event) => setEditing({ ...editing, value: event.target.value })} onBlur={saveName} onKeyDown={(event) => { if (event.key === "Enter") saveName(); if (event.key === "Escape") { setEditing(null); setNameError(""); } }} /> : <Tooltip content={task.name}><button type="button" className="kanx-name-button" aria-expanded={expanded.has(idKey(task.id))} onDoubleClick={(event) => { event.stopPropagation(); if (clickTimer.current) clearTimeout(clickTimer.current); if (!readonly) { setEditing({ id: task.id, value: task.name }); setNameError(""); } }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); toggleDetails(task); } }}>{task.name}</button></Tooltip>}
                 </> : column.id === "progress" ? `${task.progress ?? 0}%` : column.cell && renderApi ? <column.cell row={toSvarTasks([task])[0]} column={column as never} api={renderApi as never} onaction={() => undefined} /> : String((task as unknown as Record<string, unknown>)[column.id ?? ""] ?? task.fields?.[column.id ?? ""] ?? "")}
               </div>)}
-              {!readonly && <div className="kanx-row-actions" onClick={(event) => event.stopPropagation()}>{depth === 0 ? <button type="button" aria-label={`新增子任务：${task.name}`} title="新增子任务" onClick={() => add(task)}><Plus aria-hidden="true" size={16} /></button> : <span className="kanx-action-spacer" aria-hidden="true" />}<button type="button" aria-label={`删除任务：${task.name}`} title="删除任务" onClick={() => setDeleting(task.id)}><X aria-hidden="true" size={16} /></button></div>}
+              {!readonly && <div className="kanx-row-actions" onClick={(event) => event.stopPropagation()}>{depth === 0 && canCreateChild(task) ? <button type="button" aria-label={`新增子任务：${task.name}`} title="新增子任务" onClick={() => add(task)}><Plus aria-hidden="true" size={16} /></button> : <span className="kanx-action-spacer" aria-hidden="true" />}<button type="button" aria-label={`删除任务：${task.name}`} title="删除任务" onClick={() => setDeleting(task.id)}><X aria-hidden="true" size={16} /></button></div>}
             </div>
-            {detailRows > 0 && <div className="kanx-detail" style={{ height: detailRows * rowHeight }}><FieldsEditor readonly={readonly} draft={draftFor(task)} onDraft={(draft) => setDrafts((previous) => ({ ...previous, [idKey(task.id)]: draft }))} onSave={(fields) => { update(task.id, { fields }); clearDraft(task.id); }} onCancel={() => clearDraft(task.id)} /></div>}
+            {detailRows > 0 && <div className="kanx-detail" style={{ height: detailRows * rowHeight }}>
+              <div className="kanx-detail-dates" aria-label="任务日期">{task.type === "milestone" ? <span><strong>发生日期：</strong>{taskDateLabel(task.start)}</span> : <><span><strong>开始日期：</strong>{taskDateLabel(task.start)}</span><span><strong>结束日期：</strong>{taskDateLabel(task.end)}</span></>}<span><strong>持续时间：</strong>{taskDurationDays(task.start, task.end)} 天</span></div>
+              <FieldsEditor readonly={readonly} draft={draftFor(task)} onDraft={(draft) => setDrafts((previous) => ({ ...previous, [idKey(task.id)]: draft }))} onCommit={(fields) => { update(task.id, { fields }); clearDraft(task.id); }} />
+            </div>}
           </div>)}
           </div>
         </div>
       </aside>}
       <div className="kanx-chart">{mounted ? <Willow><Gantt scales={chartScales} start={yearStart} end={yearEnd} autoScale={false} cellHeight={rowHeight} cellWidth={48} {...native} columns={emptyColumns} displayMode="chart" tasks={tasks} links={showDependencyArrows ? links : emptyLinks} init={init} /></Willow> : <div aria-label="正在加载甘特图" />}</div>
     </div>
+    <TooltipContent open={chartTooltip !== null} content={chartTooltip?.content ?? ""} anchorRect={chartTooltip?.anchorRect ?? null} />
     {nameError && <div className="kanx-name-error" role="alert">{nameError}</div>}
+    {creating !== undefined && <TaskCreateDialog parent={creating ?? undefined} onCancel={() => setCreating(undefined)} onConfirm={createTask} />}
     {rulesOpen && <div className="kanx-modal-backdrop" onClick={(event) => { if (event.target === event.currentTarget) closeRules(); }}><div ref={rulesRef} className="kanx-confirm kanx-rules" role="dialog" aria-modal="true" aria-labelledby="kanx-rules-title" onKeyDown={(event) => { if (event.key === "Escape") closeRules(); if (event.key === "Tab") { event.preventDefault(); rulesRef.current?.querySelector("button")?.focus(); } }}><h3 id="kanx-rules-title">甘特图拖动规则</h3><div className="kanx-rules-content"><ol>
       <li>拖动父任务整体：父任务整体平移，所有子任务同步平移相同天数。</li>
       <li>拖动父任务左侧边缘：只改变父任务开始时间，所有子任务不变；父任务开始时间不得晚于最早子任务的开始时间。</li>

@@ -5,7 +5,29 @@ export const DETAIL_PREFIX = "__kanx_detail:";
 export const DEFAULT_GRID_WIDTH = 380;
 
 export const yearOptions = (year: number): number[] => [year + 1, year, year - 1];
-export const canCreateChild = (task: GanttTaskData): boolean => task.parent_id === undefined;
+export const canCreateChild = (task: GanttTaskData): boolean => task.parent_id === undefined && task.type !== "milestone";
+
+function taskDay(value: string | Date): Date {
+  if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    const [year, month, day] = value.split("-").map(Number);
+    return new Date(year, month - 1, day);
+  }
+  const date = new Date(value);
+  date.setHours(0, 0, 0, 0);
+  return date;
+}
+
+/** Inserts a task and keeps its parent range wide enough to contain all children. */
+export function insertTask(tasks: GanttTaskData[], task: GanttTaskData): GanttTaskData[] {
+  if (task.parent_id === undefined) return [...tasks, task];
+  const parent = tasks.find((item) => item.id === task.parent_id);
+  if (!parent) return [...tasks, task];
+  const children = [...tasks.filter((item) => item.parent_id === parent.id), task];
+  const start = new Date(Math.min(...children.map((item) => taskDay(item.start).getTime()), taskDay(parent.start).getTime()));
+  const end = new Date(Math.max(...children.map((item) => taskDay(item.end).getTime()), taskDay(parent.end).getTime()));
+  const updatedParent = { ...parent, start, end, type: parent.type === "milestone" ? parent.type : "summary", open: true };
+  return [...tasks.map((item) => item.id === parent.id ? updatedParent : item), task];
+}
 
 export function firstTaskDate(tasks: GanttTaskData[], year: number): Date {
   const yearStart = new Date(year, 0, 1);
@@ -19,6 +41,18 @@ export function firstTaskDate(tasks: GanttTaskData[], year: number): Date {
     if (visibleStart < earliest) earliest = visibleStart;
   }
   return earliest === yearEnd ? yearStart : earliest;
+}
+
+/**
+ * Default opening position: one day before the earliest task of the year,
+ * clamped to the year boundary. Dates stay local calendar days so the result
+ * never drifts by a day across time zones.
+ */
+export function openingDate(tasks: GanttTaskData[], year: number): Date {
+  const yearStart = new Date(year, 0, 1);
+  const date = firstTaskDate(tasks, year);
+  date.setDate(date.getDate() - 1);
+  return date < yearStart ? yearStart : date;
 }
 
 function toLocalDay(value: string | Date): Date {
@@ -87,6 +121,25 @@ export function visibleTasks(tasks: GanttTaskData[], expanded: Set<string>, deta
   };
   tasks.filter((task) => task.parent_id === undefined || !ids.has(task.parent_id)).forEach((task) => walk(task, 0));
   return result;
+}
+
+export type TaskDropPosition = "before" | "after";
+
+/** Reorders one task subtree among its existing siblings without changing hierarchy. */
+export function reorderTasks(tasks: GanttTaskData[], draggedId: GanttId, targetId: GanttId, position: TaskDropPosition = "before"): GanttTaskData[] {
+  const dragged = tasks.find((task) => task.id === draggedId);
+  const target = tasks.find((task) => task.id === targetId);
+  if (!dragged || !target || dragged.id === target.id || dragged.parent_id !== target.parent_id) return tasks;
+
+  const blockIds = descendants(tasks, dragged.id);
+  if (blockIds.has(target.id)) return tasks;
+  const block = tasks.filter((task) => blockIds.has(task.id));
+  const remaining = tasks.filter((task) => !blockIds.has(task.id));
+  const targetIndex = remaining.findIndex((task) => task.id === target.id);
+  if (targetIndex < 0) return tasks;
+  const insertionIndex = targetIndex + (position === "after" ? 1 : 0);
+  const result = [...remaining.slice(0, insertionIndex), ...block, ...remaining.slice(insertionIndex)];
+  return result.every((task, index) => task === tasks[index]) ? tasks : result;
 }
 
 export type TaskDragMode = "move" | "start" | "end";

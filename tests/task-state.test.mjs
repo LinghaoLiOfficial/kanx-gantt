@@ -9,9 +9,9 @@ async function loadHelper(name) {
   const { outputText } = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } });
   return import(`data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`);
 }
-const { applyChartUpdates, dragTask, canCreateChild, DEFAULT_GRID_WIDTH, firstTaskDate, idKey, removeSubtree, summariesEndingAtMilestone, visibleTasks, yearOptions } = await loadHelper("task-state");
+const { applyChartUpdates, dragTask, canCreateChild, DEFAULT_GRID_WIDTH, firstTaskDate, idKey, insertTask, openingDate, removeSubtree, reorderTasks, summariesEndingAtMilestone, visibleTasks, yearOptions } = await loadHelper("task-state");
 const { fromSvarTasks, toSvarTasks } = await loadHelper("adapter");
-const { parseDraft, toDraft } = await loadHelper("fields-state");
+const { normalizeTaskFields, parseDraft, toDraft, toTaskDraft, OWNER_FIELD } = await loadHelper("fields-state");
 
 const tasks = [
   { id: 1, name: "Root", type: "summary", start: "2026-10-01", end: "2026-10-05", open: true },
@@ -131,6 +131,29 @@ test("visible projection preserves hierarchy and distinguishes numeric/string ID
   assert.equal(tasks.length, 4);
 });
 
+test("reorderTasks moves top-level subtrees while preserving their internal order", () => {
+  const result = reorderTasks(tasks, 1, "1", "after");
+  assert.deepEqual(result.map((task) => task.id), ["1", 1, 2, 3]);
+  assert.equal(result[2], tasks[1]);
+  assert.equal(result[3], tasks[2]);
+});
+
+test("reorderTasks moves same-parent children and rejects cross-parent drops", () => {
+  const result = reorderTasks(plan, 3, 2, "before");
+  assert.deepEqual(result.map((task) => task.id), [1, 3, 2, 4, 5]);
+  assert.deepEqual(reorderTasks(plan, 2, 5, "before"), plan);
+});
+
+test("reorderTasks carries nested descendants and rejects self or descendant targets", () => {
+  const result = reorderTasks(tasks, 2, "1", "before");
+  assert.deepEqual(result, tasks);
+  const nested = [...tasks, { id: 4, name: "Sibling", type: "task", parent_id: 1, start: "2026-10-04", end: "2026-10-05" }];
+  const moved = reorderTasks(nested, 2, 4, "after");
+  assert.deepEqual(moved.map((task) => task.id), [1, "1", 4, 2, 3]);
+  assert.equal(moved[3].parent_id, 1);
+  assert.equal(moved[4].parent_id, 2);
+});
+
 test("deletion removes descendants and their links, including hidden dependencies", () => {
   const edges = [{ id: 1, source_id: 3, target_id: "1", type: "e2s" }, { id: 2, source_id: "1", target_id: "1", type: "e2s" }];
   const result = removeSubtree(tasks, edges, 2);
@@ -171,16 +194,53 @@ test("summary display end aligns with its terminal milestone without changing bu
 });
 
 
-test("field draft conversion preserves all scalar types and special dictionary keys", () => {
+test("field draft conversion stringifies legacy scalar values and preserves special dictionary keys", () => {
   const fields = JSON.parse('{"text":"","number":0,"enabled":false,"empty":null,"__proto__":"safe"}');
-  assert.deepEqual(parseDraft(toDraft(fields)).fields, fields);
+  assert.deepEqual(toDraft(fields), [
+    { key: "text", value: "" },
+    { key: "number", value: "0" },
+    { key: "enabled", value: "false" },
+    { key: "empty", value: "null" },
+    { key: "__proto__", value: "safe" },
+  ]);
+  assert.deepEqual(parseDraft(toDraft(fields)).fields, Object.fromEntries([
+    ["text", ""], ["number", "0"], ["enabled", "false"], ["empty", "null"], ["__proto__", "safe"],
+  ]));
   assert.deepEqual(parseDraft([]).fields, {});
 });
 
-test("field validation rejects empty/duplicate keys and invalid numbers", () => {
-  assert.ok(parseDraft([{ key: " ", type: "string", value: "x" }]).error);
-  assert.ok(parseDraft([{ key: "name", type: "string", value: "a" }, { key: " name ", type: "string", value: "b" }]).error);
-  for (const value of ["", " ", "abc", "Infinity"]) assert.ok(parseDraft([{ key: "n", type: "number", value }]).error);
+test("task fields always include an editable owner feature", () => {
+  assert.deepEqual(normalizeTaskFields(undefined), { [OWNER_FIELD]: "" });
+  assert.deepEqual(normalizeTaskFields({ budget: 12 }), { budget: "12", [OWNER_FIELD]: "" });
+  assert.deepEqual(toTaskDraft({ budget: 12 }).at(0), { key: OWNER_FIELD, value: "" });
+  assert.deepEqual(toTaskDraft({ budget: 12, [OWNER_FIELD]: "张三" }).at(0), { key: OWNER_FIELD, value: "张三" });
+  assert.deepEqual(parseDraft(toTaskDraft()).fields, { [OWNER_FIELD]: "" });
+});
+
+test("field validation rejects empty and duplicate keys while accepting any string value", () => {
+  assert.ok(parseDraft([{ key: " ", value: "x" }]).error);
+  assert.ok(parseDraft([{ key: "name", value: "a" }, { key: " name ", value: "b" }]).error);
+  for (const value of ["", " ", "abc", "Infinity", "0", "false", "null"]) {
+    assert.deepEqual(parseDraft([{ key: "value", value }]).fields, { value });
+  }
+});
+
+test("field order survives realtime saves when names look like integer keys", () => {
+  const draft = [
+    { key: "负责人", value: "" },
+    { key: "优先级", value: "高" },
+    { key: "10", value: "十" },
+    { key: "2", value: "二" },
+  ];
+  const saved = parseDraft(draft).fields;
+  assert.deepEqual(toTaskDraft(saved), draft);
+});
+
+test("adapter normalizes legacy task field values on input and output", () => {
+  const legacy = [{ ...tasks[1], fields: { count: 40, enabled: true, empty: null } }];
+  const internal = toSvarTasks(legacy);
+  assert.deepEqual(internal[0].$businessFields, { count: "40", enabled: "true", empty: "null" });
+  assert.deepEqual(fromSvarTasks(internal, legacy)[0].fields, { count: "40", enabled: "true", empty: "null" });
 });
 
 test("annual view uses a compact sidebar and current year plus adjacent years", () => {
@@ -192,6 +252,17 @@ test("only root tasks can create children", () => {
   assert.equal(canCreateChild(tasks[0]), true);
   assert.equal(canCreateChild(tasks[1]), false);
   assert.equal(canCreateChild(tasks[2]), false);
+  assert.equal(canCreateChild({ ...tasks[0], type: "milestone", parent_id: undefined }), false);
+});
+
+test("inserting a child expands its parent without shrinking existing slack", () => {
+  const child = { id: 9, name: "New", type: "task", parent_id: 1, start: "2026-09-20", end: "2026-10-25" };
+  const result = insertTask(plan, child);
+  assert.deepEqual(range(result[0]), ["2026-09-20", "2026-10-25"]);
+  assert.equal(result.at(-1), child);
+  const inside = insertTask(plan, { ...child, id: 10, start: "2026-10-05", end: "2026-10-10" });
+  assert.deepEqual(range(inside[0]), range(plan[0]));
+  assert.equal(inside[0].type, "summary");
 });
 
 test("annual view opens at the earliest visible task date", () => {
@@ -203,4 +274,14 @@ test("annual view opens at the earliest visible task date", () => {
   assert.equal(firstTaskDate(tasks, 2025).getMonth(), 0);
   assert.equal(firstTaskDate(tasks, 2025).getDate(), 1);
   assert.equal(firstTaskDate([{ ...tasks[0], start: "2025-12-20", end: "2026-01-04" }], 2026).getMonth(), 0);
+});
+
+test("opening date is the day before the earliest task and clamps to the year start", () => {
+  const [year, month, day] = [openingDate(tasks, 2026).getFullYear(), openingDate(tasks, 2026).getMonth(), openingDate(tasks, 2026).getDate()];
+  assert.deepEqual([year, month, day], [2026, 8, 30]);
+  const emptyYear = openingDate([], 2025);
+  assert.deepEqual([emptyYear.getFullYear(), emptyYear.getMonth(), emptyYear.getDate()], [2025, 0, 1]);
+  const clamped = openingDate([{ ...tasks[0], start: "2025-12-20", end: "2026-01-04" }], 2026);
+  assert.deepEqual([clamped.getFullYear(), clamped.getMonth(), clamped.getDate()], [2026, 0, 1]);
+  assert.equal(openingDate(tasks, 2026).getHours(), 0);
 });

@@ -2,12 +2,12 @@ import type { IColumnConfig, IScaleConfig } from "@svar-ui/react-gantt";
 import type { GanttEdgeData, GanttEdgeRenderStyle, GanttNativeProps, GanttTaskData, GanttTaskRenderStyle } from "@/components/gantt/types";
 
 export const frontendStackTaskData: GanttTaskData[] = [
-  { id: 1, name: "前端技术栈建设", type: "summary", start: "2026-09-22", end: "2026-10-18", progress: 46, open: true, fields: { "负责人": "前端团队", "预算": 120000, "已立项": true, "备注": null } },
+  { id: 1, name: "前端技术栈建设", type: "summary", start: "2026-09-22", end: "2026-10-18", progress: 46, open: true, fields: { "负责人": "前端团队", "预算": "120000", "已立项": "true", "备注": "null" } },
   { id: 2, name: "需求梳理与架构设计", type: "planning", start: "2026-09-22", end: "2026-09-25", progress: 100, parent_id: 1 },
   { id: 3, name: "Next.js 与 TypeScript 脚手架", type: "framework", start: "2026-09-25", end: "2026-09-29", progress: 100, parent_id: 1 },
   { id: 4, name: "Tailwind CSS 主题系统", type: "styling", start: "2026-09-29", end: "2026-10-03", progress: 75, parent_id: 1 },
   { id: 5, name: "shadcn/ui 基础组件", type: "ui", start: "2026-10-02", end: "2026-10-07", progress: 55, parent_id: 1 },
-  { id: 6, name: "甘特图核心视图", type: "feature", start: "2026-10-06", end: "2026-10-12", progress: 30, parent_id: 1, fields: { "优先级": "高", "预计工时": 40, "需要评审": true } },
+  { id: 6, name: "甘特图核心视图", type: "feature", start: "2026-10-06", end: "2026-10-12", progress: 30, parent_id: 1, fields: { "优先级": "高", "预计工时": "40", "需要评审": "true" } },
   { id: 7, name: "代码质量与性能验证", type: "quality", start: "2026-10-12", end: "2026-10-17", progress: 0, parent_id: 1 },
   { id: 8, name: "正式上线", type: "milestone", start: "2026-10-18", end: "2026-10-18", progress: 0, parent_id: 1 },
 ];

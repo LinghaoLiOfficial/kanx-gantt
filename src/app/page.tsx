@@ -21,7 +21,7 @@ export default function Home() {
     try {
       const parsed = JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? "null");
       if (Array.isArray(parsed?.taskData) && Array.isArray(parsed?.edgeData)) {
-        queueMicrotask(() => { if (active) setSnapshot(parsed); });
+        queueMicrotask(() => { if (active) setSnapshot({ taskData: parsed.taskData, edgeData: parsed.edgeData }); });
       }
     } catch {
       window.localStorage.removeItem(STORAGE_KEY);
@@ -55,16 +55,16 @@ export default function Home() {
           className="overflow-hidden rounded-xl border bg-background shadow-sm"
         >
           <div className="overflow-x-auto">
-            <SvarGantt
-              className="h-[560px] min-w-[960px]"
-              taskData={snapshot.taskData}
-              edgeData={snapshot.edgeData}
-              onChange={setSnapshot}
-              taskRenderers={frontendStackTaskRenderers}
-              edgeRenderers={frontendStackEdgeRenderers}
-              nativeProps={frontendStackNativeProps}
-              showDependencyArrows={showDependencyArrows}
-            />
+            {hydrated ? <SvarGantt
+                className="h-[560px] min-w-[960px]"
+                taskData={snapshot.taskData}
+                edgeData={snapshot.edgeData}
+                onChange={setSnapshot}
+                taskRenderers={frontendStackTaskRenderers}
+                edgeRenderers={frontendStackEdgeRenderers}
+                nativeProps={frontendStackNativeProps}
+                showDependencyArrows={showDependencyArrows}
+              /> : <div className="h-[560px] min-w-[960px]" aria-label="正在恢复甘特图" />}
           </div>
         </section>
       </div>
