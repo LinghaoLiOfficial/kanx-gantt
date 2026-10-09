@@ -1,6 +1,6 @@
 {
   "name": "@linghaoliofficial/kanx-gantt",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "private": false,
   "description": "A React Gantt chart component with business-friendly task and dependency data.",
   "repository": {
@@ -23,7 +23,7 @@
   ],
   "publishConfig": {
     "access": "public",
-    "registry": "https://npm.pkg.github.com"
+    "registry": "https://registry.npmjs.org"
   },
   "packageManager": "pnpm@10.15.0",
   "engines": {
