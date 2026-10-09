@@ -4,7 +4,14 @@
 
 ## 安装组件库
 
-项目发布到公共 npm registry。安装包时直接执行：
+项目发布到 GitHub Packages。安装前需在使用方项目的 `.npmrc` 中配置：
+
+```ini
+@linghaoliofficial:registry=https://npm.pkg.github.com
+//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}
+```
+
+然后安装：
 
 ```bash
 pnpm add @linghaoliofficial/kanx-gantt
