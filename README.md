@@ -4,18 +4,13 @@
 
 ## 安装组件库
 
-项目发布到 GitHub Packages。安装前需在使用方项目的 `.npmrc` 中配置：
-
-```ini
-@linghaoliofficial:registry=https://npm.pkg.github.com
-//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}
-```
-
-然后安装：
+组件库以无 scope 包 `kanx-gantt` 发布到公共 npm，无需配置 GitHub token：
 
 ```bash
-pnpm add @linghaoliofficial/kanx-gantt
+pnpm add kanx-gantt
 ```
+
+从旧包迁移时，将依赖和所有导入路径中的 `@linghaoliofficial/kanx-gantt` 替换为 `kanx-gantt`。已发布的 GitHub Packages 版本保留，不再作为后续版本的发布目标。
 
 在客户端组件中引入组件和样式，并为容器设置高度：
 
@@ -23,8 +18,8 @@ pnpm add @linghaoliofficial/kanx-gantt
 "use client";
 
 import { useState } from "react";
-import { SvarGantt, type GanttSnapshot } from "@linghaoliofficial/kanx-gantt";
-import "@linghaoliofficial/kanx-gantt/style.css";
+import { SvarGantt, type GanttSnapshot } from "kanx-gantt";
+import "kanx-gantt/style.css";
 
 export function ProjectPlan() {
   const [snapshot, setSnapshot] = useState<GanttSnapshot>({

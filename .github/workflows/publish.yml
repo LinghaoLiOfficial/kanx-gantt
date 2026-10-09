@@ -7,14 +7,11 @@ on:
 
 permissions:
   contents: read
-  packages: write
   id-token: write
 
 jobs:
   publish:
     runs-on: ubuntu-latest
-    env:
-      NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -29,7 +26,12 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-          registry-url: https://npm.pkg.github.com
+          registry-url: https://registry.npmjs.org
+
+      - name: Setup npm for Trusted Publishing
+        run: |
+          npm install --global npm@11.9.0
+          npm --version
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -48,8 +50,8 @@ jobs:
 
       - name: Publish prerelease
         if: contains(github.ref_name, '-')
-        run: npm publish --access public --tag next
+        run: npm publish --access public --tag next --provenance
 
       - name: Publish stable release
         if: ${{ !contains(github.ref_name, '-') }}
-        run: npm publish --access public --tag latest
+        run: npm publish --access public --tag latest --provenance
